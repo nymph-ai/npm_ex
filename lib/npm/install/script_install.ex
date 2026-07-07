@@ -1,6 +1,7 @@
 defmodule NPM.Install.ScriptInstall do
   alias NPM.Install.Linker
   alias NPM.Install.LockfileBuilder
+  alias NPM.Install.NestedLockfile
   alias NPM.Security.Age
   alias NPM.Security.ExoticDeps
 
@@ -74,8 +75,13 @@ defmodule NPM.Install.ScriptInstall do
 
     case NPM.Resolver.resolve(deps) do
       {:ok, resolved} ->
-        {_nested, flat} = Map.pop(resolved, :nested, %{})
-        lockfile = build_lockfile(flat)
+        {nested, flat} = Map.pop(resolved, :nested, %{})
+
+        lockfile =
+          flat
+          |> build_lockfile()
+          |> NestedLockfile.add(nested, &warn_age_heuristics/3)
+
         NPM.Lockfile.write(lockfile, lockfile_path)
         Linker.link(lockfile, nm_dir)
 
@@ -106,13 +112,22 @@ defmodule NPM.Install.ScriptInstall do
   defp node_modules_intact?(lockfile_path, nm_dir) do
     case NPM.Lockfile.read(lockfile_path) do
       {:ok, lockfile} when lockfile != %{} ->
-        Enum.all?(lockfile, fn {name, _} ->
-          File.exists?(Path.join([nm_dir, name, "package.json"]))
+        Enum.all?(lockfile, fn {name, entry} ->
+          package_intact?([nm_dir, name], entry)
         end)
 
       _ ->
         false
     end
+  end
+
+  defp package_intact?(path_parts, entry) do
+    package_dir = Path.join(path_parts)
+
+    File.exists?(Path.join(package_dir, "package.json")) and
+      Enum.all?(Map.get(entry, :nested_dependencies, %{}), fn {name, nested_entry} ->
+        package_intact?([package_dir, "node_modules", name], nested_entry)
+      end)
   end
 
   defp validate_direct_exotic_deps!(deps) do

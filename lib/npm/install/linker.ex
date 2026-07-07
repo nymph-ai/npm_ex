@@ -91,6 +91,7 @@ defmodule NPM.Install.Linker do
     end)
 
     link_bins(node_modules_dir, tree)
+    link_persisted_nested(lockfile, node_modules_dir, strategy)
 
     :ok
   end
@@ -241,7 +242,7 @@ defmodule NPM.Install.Linker do
 
       if range do
         version = resolve_nested_version(nested_pkg, range)
-        install_single_nested(nested_pkg, version, parent_name, nm_dir, strategy)
+        install_single_nested(nested_pkg, version, parent_name, flat_lockfile, nm_dir, strategy)
       end
     end)
   end
@@ -260,6 +261,16 @@ defmodule NPM.Install.Linker do
       _ ->
         nil
     end
+  end
+
+  defp dependencies_from_info(info) do
+    info.dependencies
+    |> Map.merge(NPM.PlatformOptional.select(info.optional_dependencies))
+  end
+
+  defp dependencies_from_entry(entry) do
+    entry.dependencies
+    |> Map.merge(NPM.PlatformOptional.select(Map.get(entry, :optional_dependencies, %{})))
   end
 
   defp version_matches?(version, range) do
@@ -302,9 +313,50 @@ defmodule NPM.Install.Linker do
     end)
   end
 
-  defp install_single_nested(_pkg, nil, _parent, _nm_dir, _strategy), do: :ok
+  defp link_persisted_nested(lockfile, nm_dir, strategy) do
+    Enum.each(lockfile, fn {parent_name, parent_entry} ->
+      parent_target = Path.join(nm_dir, parent_name)
 
-  defp install_single_nested(pkg, version, parent, nm_dir, strategy) do
+      parent_entry
+      |> Map.get(:nested_dependencies, %{})
+      |> Enum.each(fn {dep, entry} ->
+        install_persisted_nested(dep, entry, parent_target, lockfile, strategy)
+      end)
+    end)
+  end
+
+  defp install_persisted_nested(dep, entry, parent_target, flat_lockfile, strategy) do
+    with {:ok, cache_result} <-
+           NPM.Cache.ensure(dep, entry.version, entry.tarball, entry.integrity) do
+      if cache_result != :missing_optional do
+        cache_path = NPM.Cache.package_dir(dep, entry.version)
+        target = Path.join([parent_target, "node_modules", dep])
+        link_package(cache_path, target, strategy)
+
+        persisted_nested = Map.get(entry, :nested_dependencies, %{})
+
+        if persisted_nested == %{} do
+          install_nested_dependencies(
+            dependencies_from_entry(entry),
+            target,
+            flat_lockfile,
+            strategy,
+            MapSet.new(["#{dep}@#{entry.version}"])
+          )
+        else
+          Enum.each(persisted_nested, fn {nested_dep, nested_entry} ->
+            install_persisted_nested(nested_dep, nested_entry, target, flat_lockfile, strategy)
+          end)
+        end
+      end
+    end
+
+    :ok
+  end
+
+  defp install_single_nested(_pkg, nil, _parent, _flat_lockfile, _nm_dir, _strategy), do: :ok
+
+  defp install_single_nested(pkg, version, parent, flat_lockfile, nm_dir, strategy) do
     with {:ok, packument} <- NPM.Registry.get_packument(pkg),
          %{} = info <- Map.get(packument.versions, version),
          {:ok, cache_result} <-
@@ -313,6 +365,64 @@ defmodule NPM.Install.Linker do
         cache_path = NPM.Cache.package_dir(pkg, version)
         target = Path.join([nm_dir, parent, "node_modules", pkg])
         link_package(cache_path, target, strategy)
+        install_nested_dependencies(pkg, version, info, target, flat_lockfile, strategy)
+      end
+    end
+
+    :ok
+  end
+
+  defp install_nested_dependencies(pkg, version, info, target, flat_lockfile, strategy) do
+    deps = dependencies_from_info(info)
+
+    install_nested_dependencies(
+      deps,
+      target,
+      flat_lockfile,
+      strategy,
+      MapSet.new(["#{pkg}@#{version}"])
+    )
+  end
+
+  defp install_nested_dependencies(deps, target, flat_lockfile, strategy, visited) do
+    Enum.each(deps, fn {dep, range} ->
+      unless flat_dependency_satisfies?(flat_lockfile, dep, range) do
+        version = resolve_nested_version(dep, range)
+        install_nested_dependency(dep, version, target, flat_lockfile, strategy, visited)
+      end
+    end)
+  end
+
+  defp flat_dependency_satisfies?(flat_lockfile, dep, range) do
+    case Map.get(flat_lockfile, dep) do
+      %{version: version} -> version_matches?(version, range)
+      _ -> false
+    end
+  end
+
+  defp install_nested_dependency(_dep, nil, _target, _flat_lockfile, _strategy, _visited), do: :ok
+
+  defp install_nested_dependency(dep, version, target, flat_lockfile, strategy, visited) do
+    key = "#{dep}@#{version}"
+
+    if not MapSet.member?(visited, key) do
+      with {:ok, packument} <- NPM.Registry.get_packument(dep),
+           %{} = info <- Map.get(packument.versions, version),
+           {:ok, cache_result} <-
+             NPM.Cache.ensure(dep, version, info.dist.tarball, info.dist.integrity) do
+        if cache_result != :missing_optional do
+          cache_path = NPM.Cache.package_dir(dep, version)
+          nested_target = Path.join([target, "node_modules", dep])
+          link_package(cache_path, nested_target, strategy)
+
+          install_nested_dependencies(
+            dependencies_from_info(info),
+            nested_target,
+            flat_lockfile,
+            strategy,
+            MapSet.put(visited, key)
+          )
+        end
       end
     end
 

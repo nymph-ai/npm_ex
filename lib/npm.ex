@@ -1,6 +1,7 @@
 defmodule NPM do
   alias NPM.Install.Linker
   alias NPM.Install.LockfileBuilder
+  alias NPM.Install.NestedLockfile
   alias NPM.Install.ScriptInstall
   alias NPM.Package.JSON
   alias NPM.Security.Age
@@ -285,9 +286,18 @@ defmodule NPM do
   end
 
   defp node_modules_intact?(lockfile) do
-    Enum.all?(lockfile, fn {name, _entry} ->
-      Path.join([@node_modules, name, "package.json"]) |> File.exists?()
+    Enum.all?(lockfile, fn {name, entry} ->
+      package_intact?([@node_modules, name], entry)
     end)
+  end
+
+  defp package_intact?(path_parts, entry) do
+    package_dir = Path.join(path_parts)
+
+    File.exists?(Path.join(package_dir, "package.json")) and
+      Enum.all?(Map.get(entry, :nested_dependencies, %{}), fn {name, nested_entry} ->
+        package_intact?([package_dir, "node_modules", name], nested_entry)
+      end)
   end
 
   defp resolve_and_install(deps, old_lockfile) do
@@ -310,21 +320,15 @@ defmodule NPM do
         end
 
         lockfile = build_lockfile(flat)
+        lockfile = NestedLockfile.add(lockfile, nested_info, &warn_age_heuristics/3)
         lockfile = expand_all_optional_deps(lockfile)
         print_lockfile_diff(old_lockfile, lockfile)
         NPM.Lockfile.write(lockfile)
-        link_and_nest(lockfile, nested_info, flat)
+        link_from_lockfile(lockfile)
 
       {:error, message} ->
         Mix.shell().error("Resolution failed:\n#{message}")
         {:error, :resolution_failed}
-    end
-  end
-
-  defp link_and_nest(lockfile, nested_info, flat) do
-    with :ok <- link_from_lockfile(lockfile) do
-      if nested_info != %{}, do: Linker.link_nested(nested_info, flat, @node_modules)
-      :ok
     end
   end
 

@@ -157,19 +157,46 @@ defmodule NPM.Resolver do
   end
 
   defp extract_conflict_package(message) do
-    # Look for patterns like: "ms 2.0.0" and "ms 2.1.3" in the error
-    case Regex.scan(~r/"(\S+) (\d+\.\d+\.\d+)"/, message) do
-      [_, _ | _] = matches ->
-        names = Enum.map(matches, fn [_, name, _] -> name end)
+    message
+    |> dependency_names_from_conflict()
+    |> Enum.frequencies()
+    |> Enum.filter(fn {_name, count} -> count >= 2 end)
+    |> Enum.map(&elem(&1, 0))
+    |> List.first()
+  end
 
-        names
-        |> Enum.frequencies()
-        |> Enum.filter(fn {_, count} -> count >= 2 end)
-        |> Enum.map(&elem(&1, 0))
-        |> List.first()
+  defp dependency_names_from_conflict(message) do
+    # HexSolver reports conflicts as prose, but the useful signal is still
+    # structured: each clause says `<package/range> depends on <package/range>`.
+    # We only consider the right-hand side of `depends on`, because those are
+    # the packages whose incompatible requirements should become nested.
+    message
+    |> String.split("depends on ")
+    |> Enum.drop(1)
+    |> Enum.flat_map(&first_quoted_package_name/1)
+  end
 
-      _ ->
-        nil
+  defp first_quoted_package_name(text) do
+    text
+    |> quoted_terms()
+    |> List.first()
+    |> package_name_from_term()
+  end
+
+  defp quoted_terms(message) do
+    message
+    |> String.split("\"")
+    |> Enum.drop(1)
+    |> Enum.take_every(2)
+  end
+
+  defp package_name_from_term(nil), do: []
+  defp package_name_from_term("your app"), do: []
+
+  defp package_name_from_term(term) do
+    case String.split(term, " ", parts: 2) do
+      [name, _constraint] -> [name]
+      _ -> []
     end
   end
 

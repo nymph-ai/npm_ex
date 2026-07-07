@@ -17,7 +17,8 @@ defmodule NPM.Lockfile do
           tarball: String.t(),
           dependencies: %{String.t() => String.t()},
           optional_dependencies: %{String.t() => String.t()},
-          has_install_script: boolean()
+          has_install_script: boolean(),
+          nested_dependencies: %{String.t() => entry()}
         }
 
   @type t :: %{String.t() => entry()}
@@ -106,7 +107,8 @@ defmodule NPM.Lockfile do
          tarball: Map.get(info, "tarball", ""),
          dependencies: Map.get(info, "dependencies", %{}),
          optional_dependencies: Map.get(info, "optional_dependencies", %{}),
-         has_install_script: Map.get(info, "has_install_script", false)
+         has_install_script: Map.get(info, "has_install_script", false),
+         nested_dependencies: parse(Map.get(info, "nested_dependencies", %{}))
        }}
     end
   end
@@ -155,15 +157,23 @@ defmodule NPM.Lockfile do
 
   defp serialize(lockfile) do
     for {name, entry} <- Enum.sort_by(lockfile, &elem(&1, 0)), into: %{} do
-      {name,
-       %{
-         "version" => entry.version,
-         "integrity" => entry.integrity,
-         "tarball" => entry.tarball,
-         "dependencies" => entry.dependencies,
-         "optional_dependencies" => Map.get(entry, :optional_dependencies, %{}),
-         "has_install_script" => Map.get(entry, :has_install_script, false)
-       }}
+      {name, serialize_entry(entry)}
+    end
+  end
+
+  defp serialize_entry(entry) do
+    serialized = %{
+      "version" => entry.version,
+      "integrity" => entry.integrity,
+      "tarball" => entry.tarball,
+      "dependencies" => entry.dependencies,
+      "optional_dependencies" => Map.get(entry, :optional_dependencies, %{}),
+      "has_install_script" => Map.get(entry, :has_install_script, false)
+    }
+
+    case serialize(Map.get(entry, :nested_dependencies, %{})) do
+      nested when nested == %{} -> serialized
+      nested -> Map.put(serialized, "nested_dependencies", nested)
     end
   end
 end

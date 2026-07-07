@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.5
+
+### Fixed
+
+- Resolve npm-style nested dependency conflicts for incompatible transitive ranges, including scoped packages
+- Persist nested dependency metadata in `npm.lock` so `npm.get`, frozen installs, and script installs restore nested subtrees
+- Recursively install nested dependencies when hoisted versions do not satisfy nested package ranges
+
 ## 0.7.4
 
 ### Fixed

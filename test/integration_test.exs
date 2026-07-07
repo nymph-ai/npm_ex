@@ -739,6 +739,64 @@ defmodule NPM.IntegrationTest do
 
       System.delete_env("NPM_EX_CACHE_DIR")
     end
+
+    @tag :tmp_dir
+    test "full install creates nested subtree for incompatible transitive ranges", %{tmp_dir: dir} do
+      cache_dir = Path.join(dir, "cache")
+      System.put_env("NPM_EX_CACHE_DIR", cache_dir)
+
+      package_json = %{
+        "private" => true,
+        "dependencies" => %{
+          "@vue-flow/core" => "1.48.2",
+          "reka-ui" => "2.10.1"
+        }
+      }
+
+      File.write!(Path.join(dir, "package.json"), Jason.encode!(package_json))
+
+      File.cd!(dir, fn ->
+        NPM.Resolver.clear_cache()
+        assert :ok = NPM.install([])
+
+        assert package_version("node_modules/@vueuse/shared") == "14.3.0"
+
+        assert package_version("node_modules/@vue-flow/core/node_modules/@vueuse/core") ==
+                 "10.11.1"
+
+        assert package_version(
+                 "node_modules/@vue-flow/core/node_modules/@vueuse/core/node_modules/@vueuse/shared"
+               ) == "10.11.1"
+
+        assert package_version(
+                 "node_modules/@vue-flow/core/node_modules/@vueuse/core/node_modules/@vueuse/metadata"
+               ) == "10.11.1"
+
+        assert package_version("node_modules/reka-ui/node_modules/@vueuse/core") == "14.3.0"
+
+        File.rm_rf!("node_modules")
+        NPM.Resolver.clear_cache()
+        assert :ok = NPM.get()
+
+        assert package_version("node_modules/@vueuse/shared") == "14.3.0"
+
+        assert package_version("node_modules/@vue-flow/core/node_modules/@vueuse/core") ==
+                 "10.11.1"
+
+        assert package_version(
+                 "node_modules/@vue-flow/core/node_modules/@vueuse/core/node_modules/@vueuse/shared"
+               ) == "10.11.1"
+
+        File.rm_rf!("node_modules")
+        NPM.Resolver.clear_cache()
+        assert :ok = NPM.install(frozen: true)
+
+        assert package_version("node_modules/@vue-flow/core/node_modules/@vueuse/core") ==
+                 "10.11.1"
+      end)
+
+      System.delete_env("NPM_EX_CACHE_DIR")
+    end
   end
 
   describe "npm compatibility: nested version resolution" do
@@ -760,6 +818,29 @@ defmodule NPM.IntegrationTest do
         |> Enum.find(&String.starts_with?(&1, "debug@"))
 
       assert debug_key != nil, "debug should depend on ms"
+    end
+
+    test "scoped package conflict with range constraints is nested" do
+      NPM.Resolver.clear_cache()
+
+      deps = %{
+        "@vue-flow/core" => "1.48.2",
+        "reka-ui" => "2.10.1"
+      }
+
+      assert {:ok, resolved} = NPM.Resolver.resolve(deps)
+
+      flat = Map.delete(resolved, :nested)
+      nested = Map.get(resolved, :nested, %{})
+
+      assert flat["@vue-flow/core"] == "1.48.2"
+      assert flat["reka-ui"] == "2.10.1"
+      refute Map.has_key?(flat, "@vueuse/core")
+      assert Map.has_key?(nested, "@vueuse/core")
+
+      original_deps = NPM.Resolver.get_original_deps("@vueuse/core")
+      assert original_deps["@vue-flow/core@1.48.2"] == "^10.5.0"
+      assert original_deps["reka-ui@2.10.1"] == "^14.1.0"
     end
   end
 
@@ -920,6 +1001,14 @@ defmodule NPM.IntegrationTest do
          dependencies: info.dependencies
        }}
     end
+  end
+
+  defp package_version(path) do
+    path
+    |> Path.join("package.json")
+    |> File.read!()
+    |> :json.decode()
+    |> Map.fetch!("version")
   end
 
   defp get_raw_packument(name) do

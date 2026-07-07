@@ -29,6 +29,40 @@ defmodule NPM.LockfileTest do
       assert read_back["lodash"].tarball =~ "lodash-4.17.21.tgz"
       assert read_back["lodash"].dependencies == %{}
       assert read_back["lodash"].has_install_script == false
+      refute File.read!(path) =~ "nested_dependencies"
+    end
+
+    @tag :tmp_dir
+    test "preserves nested dependency metadata", %{tmp_dir: dir} do
+      path = Path.join(dir, "npm.lock")
+
+      lockfile = %{
+        "parent" => %{
+          version: "1.0.0",
+          integrity: "sha512-parent==",
+          tarball: "https://registry.npmjs.org/parent/-/parent-1.0.0.tgz",
+          dependencies: %{},
+          nested_dependencies: %{
+            "child" => %{
+              version: "2.0.0",
+              integrity: "sha512-child==",
+              tarball: "https://registry.npmjs.org/child/-/child-2.0.0.tgz",
+              dependencies: %{"grandchild" => "^3.0.0"},
+              optional_dependencies: %{},
+              has_install_script: false,
+              nested_dependencies: %{}
+            }
+          }
+        }
+      }
+
+      assert :ok = NPM.Lockfile.write(lockfile, path)
+      assert {:ok, read_back} = NPM.Lockfile.read(path)
+
+      nested = read_back["parent"].nested_dependencies["child"]
+      assert nested.version == "2.0.0"
+      assert nested.integrity == "sha512-child=="
+      assert nested.dependencies == %{"grandchild" => "^3.0.0"}
     end
 
     @tag :tmp_dir
