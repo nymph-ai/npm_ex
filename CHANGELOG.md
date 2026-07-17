@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Stop package and `node_modules` traversal correctly at Windows filesystem roots
+
 ## 0.7.5
 
 ### Fixed

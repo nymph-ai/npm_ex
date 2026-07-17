@@ -107,11 +107,12 @@ defmodule NPM.Resolution.PackageResolver do
   def find_node_modules(dir) do
     dir = Path.expand(dir)
     candidate = Path.join(dir, "node_modules")
+    parent = Path.dirname(dir)
 
     cond do
       File.dir?(candidate) -> candidate
-      dir == "/" -> nil
-      true -> find_node_modules(Path.dirname(dir))
+      parent == dir -> nil
+      true -> find_node_modules(parent)
     end
   end
 
@@ -256,16 +257,17 @@ defmodule NPM.Resolution.PackageResolver do
   def nearest_package(dir) do
     dir = Path.expand(dir)
     package_json_path = Path.join(dir, "package.json")
+    parent = Path.dirname(dir)
 
     cond do
       File.regular?(package_json_path) ->
         with {:ok, package} <- read_package_json(package_json_path), do: {:ok, dir, package}
 
-      dir == "/" or Path.basename(dir) == "node_modules" ->
+      parent == dir or Path.basename(dir) == "node_modules" ->
         :error
 
       true ->
-        nearest_package(Path.dirname(dir))
+        nearest_package(parent)
     end
   end
 

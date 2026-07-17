@@ -140,6 +140,16 @@ defmodule NPM.Resolution.PackageResolverTest do
     end
   end
 
+  describe "nearest_package/1" do
+    @tag :tmp_dir
+    test "returns an error when no package exists before the filesystem root", %{tmp_dir: dir} do
+      nested = Path.join([dir, "src", "components"])
+      File.mkdir_p!(nested)
+
+      assert PackageResolver.nearest_package(nested) == :error
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # try_resolve/2
   # ---------------------------------------------------------------------------
