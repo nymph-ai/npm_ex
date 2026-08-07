@@ -317,13 +317,22 @@ defmodule NPM do
     |> Enum.reduce(%{}, fn {name, path}, acc ->
       case JSON.read(Path.join(path, "package.json")) do
         {:ok, deps} ->
-          Map.merge(acc, deps)
+          # Only registry-resolvable specs are the parent's business. A linked
+          # package's `workspace:` / `file:` / git entries resolve inside its
+          # own tree, exactly as npm treats them.
+          Map.merge(acc, Map.filter(deps, fn {_n, spec} -> registry_range?(spec) end))
 
         _ ->
           Mix.raise("npm: file: dependency #{name} has no readable package.json at #{path}")
       end
     end)
   end
+
+  defp registry_range?(spec) when is_binary(spec) do
+    not (String.starts_with?(spec, "workspace:") or ExoticDeps.exotic?(spec))
+  end
+
+  defp registry_range?(_), do: false
 
   defp link_file_deps(file_deps) do
     Enum.each(file_dep_paths(file_deps), fn {name, path} ->
