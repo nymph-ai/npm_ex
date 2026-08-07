@@ -1,4 +1,5 @@
 defmodule NPM do
+  alias NPM.Install.Link
   alias NPM.Install.Linker
   alias NPM.Install.LockfileBuilder
   alias NPM.Install.NestedLockfile
@@ -269,16 +270,88 @@ defmodule NPM do
 
   defp full_install(deps) do
     validate_direct_exotic_deps!(deps)
+    {file_deps, registry_deps} = split_file_deps(deps)
+
+    # A `file:` package is not resolvable through the registry, but its own
+    # runtime dependencies are — fold them in so the solver sees them.
+    registry_deps = Map.merge(file_dep_dependencies(file_deps), registry_deps)
+
     {:ok, old_lockfile} = NPM.Lockfile.read()
 
-    if old_lockfile != %{} and lockfile_matches?(old_lockfile, deps) and
+    if old_lockfile != %{} and lockfile_matches?(old_lockfile, registry_deps) and
          lockfile_policy_current?() and
-         node_modules_intact?(old_lockfile) do
+         node_modules_intact?(old_lockfile) and
+         file_deps_linked?(file_deps) do
       Mix.shell().info("Already up to date.")
       :ok
     else
-      resolve_and_install(deps, old_lockfile)
+      case resolve_and_install(registry_deps, old_lockfile) do
+        {:error, _} = error -> error
+        other -> with :ok <- link_file_deps(file_deps), do: other
+      end
     end
+  end
+
+  # ── file: dependencies ────────────────────────────────────────────
+  #
+  # npm resolves `file:` specs by symlinking the local directory into
+  # node_modules rather than fetching a tarball. Every primitive for that
+  # already exists here (`JSON.file_dep?/1`, `JSON.resolve_file_dep/2`,
+  # `Link.link/2`); this is the wiring. Without it a `file:` spec reaches
+  # `Resolver.build_dependencies/1` and MatchErrors on `normalize_range/1`.
+
+  defp split_file_deps(deps) do
+    {file_deps, registry_deps} =
+      Enum.split_with(deps, fn {_name, spec} -> is_binary(spec) and JSON.file_dep?(spec) end)
+
+    {Map.new(file_deps), Map.new(registry_deps)}
+  end
+
+  defp file_dep_paths(file_deps) do
+    Map.new(file_deps, fn {name, spec} -> {name, JSON.resolve_file_dep(spec, File.cwd!())} end)
+  end
+
+  defp file_dep_dependencies(file_deps) do
+    file_deps
+    |> file_dep_paths()
+    |> Enum.reduce(%{}, fn {name, path}, acc ->
+      case JSON.read(Path.join(path, "package.json")) do
+        {:ok, deps} ->
+          # Only registry-resolvable specs are the parent's business. A linked
+          # package's `workspace:` / `file:` / git entries resolve inside its
+          # own tree, exactly as npm treats them.
+          Map.merge(acc, Map.filter(deps, fn {_n, spec} -> registry_range?(spec) end))
+
+        _ ->
+          Mix.raise("npm: file: dependency #{name} has no readable package.json at #{path}")
+      end
+    end)
+  end
+
+  defp registry_range?(spec) when is_binary(spec) do
+    not (String.starts_with?(spec, "workspace:") or ExoticDeps.exotic?(spec))
+  end
+
+  defp registry_range?(_), do: false
+
+  defp link_file_deps(file_deps) do
+    Enum.each(file_dep_paths(file_deps), fn {name, path} ->
+      case Link.link(path, @node_modules) do
+        {:ok, _info} -> Mix.shell().info("Linked #{name} -> #{path}")
+        {:error, reason} -> Mix.raise("npm: could not link #{name} from #{path}: #{inspect(reason)}")
+      end
+    end)
+
+    :ok
+  end
+
+  defp file_deps_linked?(file_deps) do
+    Enum.all?(file_dep_paths(file_deps), fn {name, path} ->
+      case File.read_link(Path.join(@node_modules, name)) do
+        {:ok, target} -> Path.expand(target) == Path.expand(path)
+        _ -> false
+      end
+    end)
   end
 
   defp validate_direct_exotic_deps!(deps) do
